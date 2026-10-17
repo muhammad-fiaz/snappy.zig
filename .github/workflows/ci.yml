@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / ${{ matrix.arch }} / Zig ${{ matrix.zig }}
+    name: ${{ matrix.os }} / ${{ matrix.arch }} (${{ matrix.bits }}) / Zig ${{ matrix.zig }}
     strategy:
       fail-fast: false
       matrix:
@@ -21,57 +21,93 @@ jobs:
         arch: [x86_64, aarch64]
         zig: ["0.17.0"]
         include:
+          # 32-bit Linux x86
           - os: ubuntu-latest
             arch: x86
+            bits: "32-bit"
             zig: "0.17.0"
+          # 32-bit Windows x86 (runs natively via WoW64)
           - os: windows-latest
             arch: x86
+            bits: "32-bit"
             zig: "0.17.0"
+          # 64-bit defaults
+          - os: ubuntu-latest
+            arch: x86_64
+            bits: "64-bit"
+          - os: ubuntu-latest
+            arch: aarch64
+            bits: "64-bit"
+          - os: windows-latest
+            arch: x86_64
+            bits: "64-bit"
+          - os: windows-latest
+            arch: aarch64
+            bits: "64-bit"
+          - os: macos-latest
+            arch: aarch64
+            bits: "64-bit"
         exclude:
+          # macos-latest GitHub Actions runners are Apple Silicon ARM64 only
           - os: macos-latest
             arch: x86
           - os: macos-latest
             arch: x86_64
+
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - name: Setup Zig ${{ matrix.zig }} (${{ matrix.arch }})
+
+      - name: Setup Zig ${{ matrix.zig }}
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ matrix.zig }}
-      - name: Install QEMU for cross tests (Linux)
+
+      # Fast QEMU binfmt registration for Linux aarch64 cross-architecture testing
+      - name: Setup QEMU for Linux ARM64
         if: matrix.os == 'ubuntu-latest' && matrix.arch == 'aarch64'
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static qemu-user
-      - name: Install QEMU for cross tests (Windows)
-        if: matrix.os == 'windows-latest' && matrix.arch == 'aarch64'
-        run: choco install qemu -y
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Determine Target
+        id: target
+        shell: bash
+        run: |
+          OS="${{ fromJSON('{"ubuntu-latest":"linux","windows-latest":"windows","macos-latest":"macos"}')[matrix.os] }}"
+          echo "target=${{ matrix.arch }}-$OS" >> "$GITHUB_OUTPUT"
+
       - name: Build
-        run: zig build -Dtarget=${{ matrix.arch }}-${{ fromJSON('{"ubuntu-latest":"linux","windows-latest":"windows","macos-latest":"macos"}')[matrix.os] }}
-      - name: Check (compile library, tests, and all examples)
-        run: zig build check -Dtarget=${{ matrix.arch }}-${{ fromJSON('{"ubuntu-latest":"linux","windows-latest":"windows","macos-latest":"macos"}')[matrix.os] }}
+        run: zig build -Dtarget=${{ steps.target.outputs.target }}
+
+      - name: Check (compile library, tests, fuzzer, and all examples)
+        run: zig build check -Dtarget=${{ steps.target.outputs.target }}
+
       - name: Test
         shell: bash
         run: |
-          TARGET="${{ matrix.arch }}-${{ fromJSON('{"ubuntu-latest":"linux","windows-latest":"windows","macos-latest":"macos"}')[matrix.os] }}"
-          if [ "${{ matrix.arch }}" = "aarch64" ] && [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            zig build test -Dtarget=$TARGET --summary all -fqemu
-          elif [ "${{ matrix.arch }}" = "aarch64" ] && [ "${{ matrix.os }}" = "windows-latest" ]; then
-            zig build -Dtarget=$TARGET
-            echo "Cross build verified for $TARGET"
+          TARGET="${{ steps.target.outputs.target }}"
+          # On Windows x86_64 runners, cross-compiling to Windows ARM64 cannot execute without native ARM hardware,
+          # but compilation of library, tests, and all examples is fully verified by the check step above.
+          if [ "${{ matrix.arch }}" = "aarch64" ] && [ "${{ matrix.os }}" = "windows-latest" ]; then
+            echo "Skipping execution on ${{ matrix.os }} for $TARGET (cross-compilation verified via zig build check)"
           else
             zig build test -Dtarget=$TARGET --summary all
           fi
+
       - name: Fuzz
         if: matrix.os == 'ubuntu-latest' && matrix.arch == 'x86_64'
         run: zig build fuzz --summary all
+
       - name: Run all examples
         shell: bash
         run: |
-          TARGET="${{ matrix.arch }}-${{ fromJSON('{"ubuntu-latest":"linux","windows-latest":"windows","macos-latest":"macos"}')[matrix.os] }}"
-          if [ "${{ matrix.arch }}" = "x86_64" ] || [ "${{ matrix.arch }}" = "x86" ]; then
+          TARGET="${{ steps.target.outputs.target }}"
+          # Execute examples on native hosts: Linux x86_64, Linux x86 (32-bit), Windows x86_64, Windows x86 (WoW64), macOS ARM64
+          if [ "${{ matrix.arch }}" = "x86_64" ] || [ "${{ matrix.arch }}" = "x86" ] || [ "${{ matrix.os }}" = "macos-latest" ]; then
             zig build run-all-examples -Dtarget=$TARGET
           else
-            echo "Skipping example execution on $TARGET (no emulation)"
+            echo "Skipping example execution on $TARGET"
           fi
 
   fmt:
