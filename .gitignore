@@ -21,8 +21,7 @@ bun-debug.log*
 temp_*
 test_io_*
 *.tmp
-snappy/
-snappy_ref/
+
 
 # Operating system artifacts
 .DS_Store
