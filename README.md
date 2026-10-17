@@ -315,17 +315,17 @@ The `examples/` directory contains complete, runnable examples:
 
 | Example | File | Description |
 |---|---|---|
-| `basic_compression` | `examples/basic_compression.zig` | One-shot framed compression and caller-buffer APIs |
-| `caller_buffer` | `examples/caller_buffer.zig` | Zero-allocation framed and raw block stack buffer operations |
-| `reusable_context` | `examples/reusable_context.zig` | Context reuse via `reset()` without reallocating buffers |
-| `streaming_compression` | `examples/streaming_compression.zig` | Chunked streaming compression using `StreamingCompressor` |
-| `streaming_decompression` | `examples/streaming_decompression.zig` | Chunked streaming decompression using `StreamingDecompressor` |
-| `io_pipeline` | `examples/io_pipeline.zig` | In-memory `std.Io.Reader` & `std.Io.Writer` streaming pipeline |
-| `error_handling` | `examples/error_handling.zig` | Corrupted bitstream detection and decompression bomb guards |
-| `format_introspection` | `examples/format_introspection.zig` | Library version, format constants, and compressed bounds |
-| `bit_level` | `examples/bit_level.zig` | Variable-length integer encoding, tag bytes, and CRC-32C masking |
-| `compress_file` | `examples/compress_file.zig` | File compression on disk using `std.Io` |
-| `decompress_file` | `examples/decompress_file.zig` | File decompression from disk using `std.Io` |
+| `basic_compression` | [`examples/basic_compression.zig`](examples/basic_compression.zig) | One-shot framed compression and caller-buffer APIs |
+| `caller_buffer` | [`examples/caller_buffer.zig`](examples/caller_buffer.zig) | Zero-allocation framed and raw block stack buffer operations |
+| `reusable_context` | [`examples/reusable_context.zig`](examples/reusable_context.zig) | Context reuse via `reset()` without reallocating buffers |
+| `streaming_compression` | [`examples/streaming_compression.zig`](examples/streaming_compression.zig) | Chunked streaming compression using `StreamingCompressor` |
+| `streaming_decompression` | [`examples/streaming_decompression.zig`](examples/streaming_decompression.zig) | Chunked streaming decompression using `StreamingDecompressor` |
+| `io_pipeline` | [`examples/io_pipeline.zig`](examples/io_pipeline.zig) | In-memory `std.Io.Reader` & `std.Io.Writer` streaming pipeline |
+| `error_handling` | [`examples/error_handling.zig`](examples/error_handling.zig) | Corrupted bitstream detection and decompression bomb guards |
+| `format_introspection` | [`examples/format_introspection.zig`](examples/format_introspection.zig) | Library version, format constants, and compressed bounds |
+| `bit_level` | [`examples/bit_level.zig`](examples/bit_level.zig) | Variable-length integer encoding, tag bytes, and CRC-32C masking |
+| `compress_file` | [`examples/compress_file.zig`](examples/compress_file.zig) | File compression on disk using `std.Io` |
+| `decompress_file` | [`examples/decompress_file.zig`](examples/decompress_file.zig) | File decompression from disk using `std.Io` |
 
 Run any example:
 
