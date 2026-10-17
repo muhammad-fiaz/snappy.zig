@@ -19,13 +19,7 @@ pub fn compressStream(
     var comp_chunk: [block.maxCompressedSize(framing.MAX_CHUNK_PAYLOAD)]u8 = undefined;
 
     while (true) {
-        var bytes_read: usize = 0;
-        while (bytes_read < raw_chunk.len) {
-            const n = reader.readSliceShort(raw_chunk[bytes_read..]) catch return error.CorruptStream;
-            if (n == 0) break;
-            bytes_read += n;
-        }
-
+        const bytes_read = reader.readSliceShort(&raw_chunk) catch return error.CorruptStream;
         if (bytes_read == 0) break;
 
         const chunk_slice = raw_chunk[0..bytes_read];
@@ -37,9 +31,7 @@ pub fn compressStream(
             const payload_len = 4 + comp_len;
             var header: [8]u8 = undefined;
             header[0] = types.CHUNK_COMPRESSED_DATA;
-            header[1] = @as(u8, @truncate(payload_len));
-            header[2] = @as(u8, @truncate(payload_len >> 8));
-            header[3] = @as(u8, @truncate(payload_len >> 16));
+            std.mem.writeInt(u24, header[1..][0..3], @truncate(payload_len), .little);
             std.mem.writeInt(u32, header[4..8], masked_crc, .little);
 
             try writer.writeAll(&header);
@@ -48,9 +40,7 @@ pub fn compressStream(
             const payload_len = 4 + bytes_read;
             var header: [8]u8 = undefined;
             header[0] = types.CHUNK_UNCOMPRESSED_DATA;
-            header[1] = @as(u8, @truncate(payload_len));
-            header[2] = @as(u8, @truncate(payload_len >> 8));
-            header[3] = @as(u8, @truncate(payload_len >> 16));
+            std.mem.writeInt(u24, header[1..][0..3], @truncate(payload_len), .little);
             std.mem.writeInt(u32, header[4..8], masked_crc, .little);
 
             try writer.writeAll(&header);
@@ -78,20 +68,12 @@ pub fn decompressStream(
 
     while (true) {
         var ch_hdr: [4]u8 = undefined;
-        var hdr_read: usize = 0;
-        while (hdr_read < 4) {
-            const n = reader.readSliceShort(ch_hdr[hdr_read..]) catch return error.CorruptStream;
-            if (n == 0) break;
-            hdr_read += n;
-        }
-
+        const hdr_read = reader.readSliceShort(&ch_hdr) catch return error.CorruptStream;
         if (hdr_read == 0) break; // Clean EOF
         if (hdr_read < 4) return error.TruncatedInput;
 
         const chunk_type = ch_hdr[0];
-        const chunk_len = @as(usize, ch_hdr[1]) |
-            (@as(usize, ch_hdr[2]) << 8) |
-            (@as(usize, ch_hdr[3]) << 16);
+        const chunk_len: usize = std.mem.readInt(u24, ch_hdr[1..][0..3], .little);
 
         var payload_slice: []u8 = undefined;
         var dynamic_alloc: ?[]u8 = null;
@@ -104,12 +86,7 @@ pub fn decompressStream(
             payload_slice = dynamic_alloc.?;
         }
 
-        var pl_read: usize = 0;
-        while (pl_read < chunk_len) {
-            const n = reader.readSliceShort(payload_slice[pl_read..]) catch return error.CorruptStream;
-            if (n == 0) return error.TruncatedInput;
-            pl_read += n;
-        }
+        reader.readSliceAll(payload_slice) catch return error.TruncatedInput;
 
         switch (chunk_type) {
             types.CHUNK_STREAM_IDENTIFIER => {
@@ -218,9 +195,7 @@ pub const StreamingCompressor = struct {
                 const payload_len = 4 + comp_len;
                 var hdr: [8]u8 = undefined;
                 hdr[0] = types.CHUNK_COMPRESSED_DATA;
-                hdr[1] = @as(u8, @truncate(payload_len));
-                hdr[2] = @as(u8, @truncate(payload_len >> 8));
-                hdr[3] = @as(u8, @truncate(payload_len >> 16));
+                std.mem.writeInt(u24, hdr[1..][0..3], @truncate(payload_len), .little);
                 std.mem.writeInt(u32, hdr[4..8], masked_crc, .little);
                 try writer.writeAll(&hdr);
                 try writer.writeAll(scratch[0..comp_len]);
@@ -228,9 +203,7 @@ pub const StreamingCompressor = struct {
                 const payload_len = 4 + framing.MAX_CHUNK_PAYLOAD;
                 var hdr: [8]u8 = undefined;
                 hdr[0] = types.CHUNK_UNCOMPRESSED_DATA;
-                hdr[1] = @as(u8, @truncate(payload_len));
-                hdr[2] = @as(u8, @truncate(payload_len >> 8));
-                hdr[3] = @as(u8, @truncate(payload_len >> 16));
+                std.mem.writeInt(u24, hdr[1..][0..3], @truncate(payload_len), .little);
                 std.mem.writeInt(u32, hdr[4..8], masked_crc, .little);
                 try writer.writeAll(&hdr);
                 try writer.writeAll(chunk_slice);
@@ -258,9 +231,7 @@ pub const StreamingCompressor = struct {
                 const payload_len = 4 + comp_len;
                 var hdr: [8]u8 = undefined;
                 hdr[0] = types.CHUNK_COMPRESSED_DATA;
-                hdr[1] = @as(u8, @truncate(payload_len));
-                hdr[2] = @as(u8, @truncate(payload_len >> 8));
-                hdr[3] = @as(u8, @truncate(payload_len >> 16));
+                std.mem.writeInt(u24, hdr[1..][0..3], @truncate(payload_len), .little);
                 std.mem.writeInt(u32, hdr[4..8], masked_crc, .little);
                 try writer.writeAll(&hdr);
                 try writer.writeAll(scratch[0..comp_len]);
@@ -268,9 +239,7 @@ pub const StreamingCompressor = struct {
                 const payload_len = 4 + chunk_slice.len;
                 var hdr: [8]u8 = undefined;
                 hdr[0] = types.CHUNK_UNCOMPRESSED_DATA;
-                hdr[1] = @as(u8, @truncate(payload_len));
-                hdr[2] = @as(u8, @truncate(payload_len >> 8));
-                hdr[3] = @as(u8, @truncate(payload_len >> 16));
+                std.mem.writeInt(u24, hdr[1..][0..3], @truncate(payload_len), .little);
                 std.mem.writeInt(u32, hdr[4..8], masked_crc, .little);
                 try writer.writeAll(&hdr);
                 try writer.writeAll(chunk_slice);
@@ -331,9 +300,7 @@ pub const StreamingDecompressor = struct {
 
         while (self.in_buffer.items.len >= 4) {
             const chunk_type = self.in_buffer.items[0];
-            const chunk_len = @as(usize, self.in_buffer.items[1]) |
-                (@as(usize, self.in_buffer.items[2]) << 8) |
-                (@as(usize, self.in_buffer.items[3]) << 16);
+            const chunk_len: usize = std.mem.readInt(u24, self.in_buffer.items[1..][0..3], .little);
 
             if (self.in_buffer.items.len < 4 + chunk_len) return; // Wait for full chunk
 

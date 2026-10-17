@@ -3,6 +3,9 @@ const std = @import("std");
 /// Implements CRC-32C calculation and masking as defined in the Snappy framing specification.
 const Crc32C = std.hash.crc.@"CRC-32/ISCSI";
 
+/// Re-export the standard library CRC-32/ISCSI hasher for incremental calculation.
+pub const Hasher = Crc32C;
+
 /// Mask constant used by Snappy framing format: 0xa282ead8.
 pub const MASK_DELTA: u32 = 0xa282ead8;
 

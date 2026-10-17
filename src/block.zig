@@ -56,10 +56,13 @@ pub fn isValidCompressedBuffer(compressed: []const u8) bool {
                 } else {
                     const extra_bytes: usize = (len_tag - 59);
                     if (in_pos + extra_bytes > compressed.len) return false;
-                    var extra_len: u64 = 0;
-                    for (0..extra_bytes) |b_idx| {
-                        extra_len |= @as(u64, compressed[in_pos + b_idx]) << @as(u6, @intCast(b_idx * 8));
-                    }
+                    const extra_len: u64 = switch (extra_bytes) {
+                        1 => compressed[in_pos],
+                        2 => std.mem.readInt(u16, compressed[in_pos..][0..2], .little),
+                        3 => std.mem.readInt(u24, compressed[in_pos..][0..3], .little),
+                        4 => std.mem.readInt(u32, compressed[in_pos..][0..4], .little),
+                        else => unreachable,
+                    };
                     in_pos += extra_bytes;
                     const total_len = extra_len + 1;
                     if (total_len > @as(u64, expected_len - out_produced)) return false;
@@ -115,6 +118,14 @@ inline fn copyMatch(dst: []u8, out_pos: usize, offset: usize, len: usize) void {
         @memcpy(dst[out_pos .. out_pos + len], dst[src_pos .. src_pos + len]);
     } else if (offset == 1) {
         @memset(dst[out_pos .. out_pos + len], dst[src_pos]);
+    } else if (offset >= 8) {
+        var copied: usize = 0;
+        while (copied + 8 <= len) : (copied += 8) {
+            @memcpy(dst[out_pos + copied ..][0..8], dst[src_pos + copied ..][0..8]);
+        }
+        while (copied < len) : (copied += 1) {
+            dst[out_pos + copied] = dst[src_pos + copied];
+        }
     } else {
         var i: usize = 0;
         while (i < len) : (i += 1) {
@@ -164,9 +175,7 @@ inline fn emitLiteral(literal: []const u8, out: []u8) usize {
         op += 3;
     } else if (n < (1 << 24)) {
         out[op] = types.TAG_LITERAL | (62 << 2);
-        out[op + 1] = @as(u8, @truncate(n));
-        out[op + 2] = @as(u8, @truncate(n >> 8));
-        out[op + 3] = @as(u8, @truncate(n >> 16));
+        std.mem.writeInt(u24, out[op + 1 ..][0..3], @as(u24, @truncate(n)), .little);
         op += 4;
     } else {
         out[op] = types.TAG_LITERAL | (63 << 2);
@@ -586,10 +595,13 @@ pub fn decompressInto(
                 } else {
                     const extra_bytes: usize = (len_tag - 59);
                     if (in_pos + extra_bytes > input.len) return error.TruncatedInput;
-                    var extra_len: u64 = 0;
-                    for (0..extra_bytes) |b_idx| {
-                        extra_len |= @as(u64, input[in_pos + b_idx]) << @as(u6, @intCast(b_idx * 8));
-                    }
+                    const extra_len: u64 = switch (extra_bytes) {
+                        1 => input[in_pos],
+                        2 => std.mem.readInt(u16, input[in_pos..][0..2], .little),
+                        3 => std.mem.readInt(u24, input[in_pos..][0..3], .little),
+                        4 => std.mem.readInt(u32, input[in_pos..][0..4], .little),
+                        else => unreachable,
+                    };
                     in_pos += extra_bytes;
                     const total_len = extra_len + 1;
                     if (total_len > @as(u64, expected_len - out_pos)) return error.CorruptStream;

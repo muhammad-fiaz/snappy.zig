@@ -25,7 +25,7 @@ pub const MAX_CHUNK_PAYLOAD = 65536;
 pub fn maxFramedCompressedSize(input_len: usize) usize {
     if (input_len == 0) return STREAM_HEADER.len;
     const chunk_overhead = 8 + block.maxCompressedSize(MAX_CHUNK_PAYLOAD);
-    const num_chunks = (input_len / MAX_CHUNK_PAYLOAD) + if (input_len % MAX_CHUNK_PAYLOAD != 0) @as(usize, 1) else @as(usize, 0);
+    const num_chunks = std.math.divCeil(usize, input_len, MAX_CHUNK_PAYLOAD) catch 0;
     if (num_chunks > (std.math.maxInt(usize) - STREAM_HEADER.len) / chunk_overhead) {
         return std.math.maxInt(usize);
     }
@@ -73,9 +73,7 @@ pub fn compressInto(
             if (op + 4 + payload_len > output.len) return error.OutputBufferTooSmall;
 
             output[op] = types.CHUNK_COMPRESSED_DATA;
-            output[op + 1] = @as(u8, @truncate(payload_len));
-            output[op + 2] = @as(u8, @truncate(payload_len >> 8));
-            output[op + 3] = @as(u8, @truncate(payload_len >> 16));
+            std.mem.writeInt(u24, output[op + 1 ..][0..3], @truncate(payload_len), .little);
             op += 4;
 
             std.mem.writeInt(u32, output[op..][0..4], masked_crc, .little);
@@ -89,9 +87,7 @@ pub fn compressInto(
             if (op + 4 + payload_len > output.len) return error.OutputBufferTooSmall;
 
             output[op] = types.CHUNK_UNCOMPRESSED_DATA;
-            output[op + 1] = @as(u8, @truncate(payload_len));
-            output[op + 2] = @as(u8, @truncate(payload_len >> 8));
-            output[op + 3] = @as(u8, @truncate(payload_len >> 16));
+            std.mem.writeInt(u24, output[op + 1 ..][0..3], @truncate(payload_len), .little);
             op += 4;
 
             std.mem.writeInt(u32, output[op..][0..4], masked_crc, .little);
@@ -148,9 +144,7 @@ pub fn decompressInto(
     while (in_pos < input.len) {
         if (in_pos + 4 > input.len) return error.TruncatedInput;
         const chunk_type = input[in_pos];
-        const chunk_len = @as(usize, input[in_pos + 1]) |
-            (@as(usize, input[in_pos + 2]) << 8) |
-            (@as(usize, input[in_pos + 3]) << 16);
+        const chunk_len: usize = std.mem.readInt(u24, input[in_pos + 1 ..][0..3], .little);
         in_pos += 4;
 
         if (in_pos + chunk_len > input.len) return error.TruncatedInput;
@@ -256,9 +250,7 @@ pub fn decompress(
     while (in_pos < input.len) {
         if (in_pos + 4 > input.len) return error.TruncatedInput;
         const chunk_type = input[in_pos];
-        const chunk_len = @as(usize, input[in_pos + 1]) |
-            (@as(usize, input[in_pos + 2]) << 8) |
-            (@as(usize, input[in_pos + 3]) << 16);
+        const chunk_len: usize = std.mem.readInt(u24, input[in_pos + 1 ..][0..3], .little);
         in_pos += 4;
 
         if (in_pos + chunk_len > input.len) return error.TruncatedInput;
