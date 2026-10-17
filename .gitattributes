@@ -1,0 +1,7 @@
+# Treat all test vector files as raw binary data across all platforms
+src/testdata/* -text -diff
+testdata/* -text -diff
+*.snappy -text -diff
+*.jpeg -text -diff
+*.gtb -text -diff
+*.pdf -text -diff
