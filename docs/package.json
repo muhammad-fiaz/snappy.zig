@@ -1,0 +1,16 @@
+{
+  "name": "snappy-zig-docs",
+  "version": "0.1.0",
+  "description": "Documentation for snappy.zig - Native Zig Snappy compression library",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "docs:dev": "vitepress dev",
+    "docs:build": "vitepress build",
+    "docs:preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}

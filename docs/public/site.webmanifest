@@ -1,0 +1,16 @@
+{
+  "name": "snappy.zig",
+  "short_name": "snappy.zig",
+  "description": "High-performance native Zig implementation of Google's Snappy compression format.",
+  "start_url": "/snappy.zig/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0284c7",
+  "icons": [
+    {
+      "src": "/snappy.zig/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

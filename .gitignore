@@ -1,0 +1,34 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+
+# VitePress documentation build artifacts & cache
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/.vitepress/.temp/
+
+# Node.js & Bun package dependencies
+node_modules/
+docs/node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# Temporary test, benchmark, and example runtime files
+*.sz
+temp_*
+test_io_*
+*.tmp
+
+# Operating system artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor & IDE directories
+.vscode/
+.idea/
+*.swp
+*~

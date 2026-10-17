@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://muhammad-fiaz.github.io/snappy.zig/
+    about: Read the snappy.zig documentation, guides, API reference, and examples.
+  - name: GitHub Discussions
+    url: https://github.com/muhammad-fiaz/snappy.zig/discussions
+    about: Ask questions, share ideas, and discuss native Snappy in Zig.
+  - name: Security Advisories
+    url: https://github.com/muhammad-fiaz/snappy.zig/security/advisories/new
+    about: Please report security vulnerabilities privately according to SECURITY.md.
