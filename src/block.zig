@@ -3,10 +3,14 @@ const types = @import("types.zig");
 const varint = @import("varint.zig");
 
 /// Implements the Snappy block format defined by Google's Snappy format specification.
-pub const HASH_TABLE_BITS = 14;
-pub const HASH_TABLE_SIZE = 1 << HASH_TABLE_BITS; // 16384 entries
-const HASH_MULTIPLIER: u32 = 0x1e35a7bd;
-const SECONDARY_MULTIPLIER: u32 = 0x9e3779b1;
+pub const MAX_HASH_TABLE_BITS = 15;
+pub const MAX_HASH_TABLE_SIZE = 1 << MAX_HASH_TABLE_BITS; // 32768 entries (64 KB)
+pub const MIN_HASH_TABLE_BITS = 8;
+pub const MIN_HASH_TABLE_SIZE = 1 << MIN_HASH_TABLE_BITS; // 256 entries
+
+// Backward compatibility aliases
+pub const HASH_TABLE_BITS = MAX_HASH_TABLE_BITS;
+pub const HASH_TABLE_SIZE = MAX_HASH_TABLE_SIZE;
 
 /// Calculates the upper bound of compressed bytes for an input of length `source_bytes`.
 /// Formula: 32 + source_bytes + source_bytes / 6.
@@ -15,6 +19,13 @@ pub fn maxCompressedSize(source_bytes: usize) usize {
         return std.math.maxInt(usize);
     }
     return 32 + source_bytes + source_bytes / 6;
+}
+
+/// Dynamically computes the hash table size for a fragment, matching Google Snappy's CalculateTableSize.
+pub fn calculateTableSize(input_size: usize) usize {
+    if (input_size > MAX_HASH_TABLE_SIZE) return MAX_HASH_TABLE_SIZE;
+    if (input_size < MIN_HASH_TABLE_SIZE) return MIN_HASH_TABLE_SIZE;
+    return @as(usize, 2) << @intCast(std.math.log2(input_size - 1));
 }
 
 /// Inspects the uncompressed length of a Snappy block without decompressing it.
@@ -112,10 +123,391 @@ inline fn copyMatch(dst: []u8, out_pos: usize, offset: usize, len: usize) void {
     }
 }
 
-/// Compresses a Snappy block into a caller-provided destination buffer.
-pub fn compressInto(
+inline fn tableEntryL1(table: []u16, bytes: u32, mask: usize) *u16 {
+    const kMagic: u32 = 0x1e35a7bd;
+    const hash: u32 = (kMagic *% bytes) >> (31 - MAX_HASH_TABLE_BITS);
+    const idx = (hash >> 1) & mask;
+    return &table[idx];
+}
+
+inline fn tableEntry4Byte(table: []u16, bytes: u32, mask: usize) *u16 {
+    const kMagic: u32 = 2654435761;
+    const hash: u32 = (kMagic *% bytes) >> (32 - MAX_HASH_TABLE_BITS);
+    const idx = (hash >> 1) & mask;
+    return &table[idx];
+}
+
+inline fn tableEntry8Byte(table: []u16, bytes: u64, mask: usize) *u16 {
+    const kMagic: u64 = 58295818150454627;
+    const hash: u32 = @truncate((kMagic *% bytes) >> (64 - MAX_HASH_TABLE_BITS));
+    const idx = (hash >> 1) & mask;
+    return &table[idx];
+}
+
+/// Emits literal bytes according to the official Google Snappy specification.
+inline fn emitLiteral(literal: []const u8, out: []u8) usize {
+    const len = literal.len;
+    if (len == 0) return 0;
+    const n = len - 1;
+    var op: usize = 0;
+
+    if (n < 60) {
+        out[op] = types.TAG_LITERAL | (@as(u8, @truncate(n)) << 2);
+        op += 1;
+    } else if (n < 256) {
+        out[op] = types.TAG_LITERAL | (60 << 2);
+        out[op + 1] = @as(u8, @truncate(n));
+        op += 2;
+    } else if (n < 65536) {
+        out[op] = types.TAG_LITERAL | (61 << 2);
+        std.mem.writeInt(u16, out[op + 1 ..][0..2], @as(u16, @truncate(n)), .little);
+        op += 3;
+    } else if (n < (1 << 24)) {
+        out[op] = types.TAG_LITERAL | (62 << 2);
+        out[op + 1] = @as(u8, @truncate(n));
+        out[op + 2] = @as(u8, @truncate(n >> 8));
+        out[op + 3] = @as(u8, @truncate(n >> 16));
+        op += 4;
+    } else {
+        out[op] = types.TAG_LITERAL | (63 << 2);
+        std.mem.writeInt(u32, out[op + 1 ..][0..4], @as(u32, @truncate(n)), .little);
+        op += 5;
+    }
+
+    @memcpy(out[op .. op + len], literal);
+    return op + len;
+}
+
+inline fn emitCopyAtMost64(offset: usize, len: usize, out: []u8) usize {
+    std.debug.assert(len >= 4 and len <= 64);
+    if (len < 12 and offset < 2048) {
+        const len_field = @as(u8, @truncate(len - 4));
+        const off_hi = @as(u8, @truncate((offset >> 8) & 0x07));
+        out[0] = types.TAG_COPY_1 | (len_field << 2) | (off_hi << 5);
+        out[1] = @as(u8, @truncate(offset & 0xff));
+        return 2;
+    } else if (offset <= 65535) {
+        out[0] = types.TAG_COPY_2 | (@as(u8, @truncate(len - 1)) << 2);
+        std.mem.writeInt(u16, out[1..3], @as(u16, @truncate(offset)), .little);
+        return 3;
+    } else {
+        out[0] = types.TAG_COPY_4 | (@as(u8, @truncate(len - 1)) << 2);
+        std.mem.writeInt(u32, out[1..5], @as(u32, @truncate(offset)), .little);
+        return 5;
+    }
+}
+
+inline fn emitCopy(offset: usize, mut_len: usize, out: []u8) usize {
+    var op: usize = 0;
+    var len = mut_len;
+    while (len >= 68) {
+        op += emitCopyAtMost64(offset, 64, out[op..]);
+        len -= 64;
+    }
+    if (len > 64) {
+        op += emitCopyAtMost64(offset, 60, out[op..]);
+        len -= 60;
+    }
+    op += emitCopyAtMost64(offset, len, out[op..]);
+    return op;
+}
+
+inline fn findMatchLengthPlain(s1: []const u8, s2: []const u8) usize {
+    const limit = @min(s1.len, s2.len);
+    var matched: usize = 0;
+    while (matched + 8 <= limit) {
+        const a1 = std.mem.readInt(u64, s1[matched..][0..8], .little);
+        const a2 = std.mem.readInt(u64, s2[matched..][0..8], .little);
+        if (a1 == a2) {
+            matched += 8;
+        } else {
+            const xorval = a1 ^ a2;
+            const shift = @ctz(xorval);
+            matched += shift >> 3;
+            return matched;
+        }
+    }
+    while (matched < limit and s1[matched] == s2[matched]) {
+        matched += 1;
+    }
+    return matched;
+}
+
+/// Google Snappy Level 1 compression fragment match finder.
+fn compressFragmentL1(
     input: []const u8,
     output: []u8,
+    table: []u16,
+) usize {
+    const table_size = calculateTableSize(input.len);
+    const sub_table = table[0..table_size];
+    @memset(sub_table, 0);
+    const mask = table_size - 1;
+
+    if (input.len < 15) {
+        return emitLiteral(input, output);
+    }
+
+    const ip_limit = input.len - 15;
+    var ip: usize = 0;
+    var next_emit: usize = 0;
+    var op: usize = 0;
+    var skip: usize = 32;
+
+    var preload: u32 = std.mem.readInt(u32, input[ip + 1 ..][0..4], .little);
+
+    main_loop: while (true) {
+        next_emit = ip;
+        ip += 1;
+        var data: u64 = std.mem.readInt(u64, input[ip..][0..8], .little);
+        skip = 32;
+
+        var candidate: usize = undefined;
+
+        if (ip_limit - ip >= 16) {
+            const delta = ip;
+            for (0..4) |j| {
+                for (0..4) |k| {
+                    const i = 4 * j + k;
+                    const dword: u32 = if (i == 0) preload else @truncate(data);
+                    const entry = tableEntryL1(sub_table, dword, mask);
+                    candidate = entry.*;
+                    entry.* = @truncate(delta + i);
+                    if (std.mem.readInt(u32, input[candidate..][0..4], .little) == dword) {
+                        ip += i;
+                        if (ip > next_emit) {
+                            op += emitLiteral(input[next_emit..ip], output[op..]);
+                        }
+                        // Enter emit_match loop
+                        while (true) {
+                            const base = ip;
+                            const matched = 4 + findMatchLengthPlain(input[candidate + 4 ..], input[ip + 4 ..]);
+                            ip += matched;
+                            const offset = base - candidate;
+                            op += emitCopy(offset, matched, output[op..]);
+                            if (ip >= ip_limit) break :main_loop;
+
+                            const dword_prev = std.mem.readInt(u32, input[ip - 1 ..][0..4], .little);
+                            tableEntryL1(sub_table, dword_prev, mask).* = @truncate(ip - 1);
+
+                            const dword_curr = std.mem.readInt(u32, input[ip..][0..4], .little);
+                            const curr_entry = tableEntryL1(sub_table, dword_curr, mask);
+                            candidate = curr_entry.*;
+                            curr_entry.* = @truncate(ip);
+
+                            if (std.mem.readInt(u32, input[candidate..][0..4], .little) != dword_curr) {
+                                break;
+                            }
+                        }
+                        preload = std.mem.readInt(u32, input[ip + 1 ..][0..4], .little);
+                        continue :main_loop;
+                    }
+                    data >>= 8;
+                }
+                if (j < 3) {
+                    data = std.mem.readInt(u64, input[ip + 4 * j + 4 ..][0..8], .little);
+                }
+            }
+            ip += 16;
+            skip += 16;
+        }
+
+        while (true) {
+            const dword: u32 = @truncate(data);
+            const entry = tableEntryL1(sub_table, dword, mask);
+            const bytes_between = skip >> 5;
+            skip += bytes_between;
+            const next_ip = ip + bytes_between;
+            if (next_ip > ip_limit) {
+                ip = next_emit;
+                break :main_loop;
+            }
+            candidate = entry.*;
+            entry.* = @truncate(ip);
+            if (dword == std.mem.readInt(u32, input[candidate..][0..4], .little)) {
+                break;
+            }
+            data = std.mem.readInt(u64, input[next_ip..][0..8], .little);
+            ip = next_ip;
+        }
+
+        if (ip > next_emit) {
+            op += emitLiteral(input[next_emit..ip], output[op..]);
+        }
+
+        while (true) {
+            const base = ip;
+            const matched = 4 + findMatchLengthPlain(input[candidate + 4 ..], input[ip + 4 ..]);
+            ip += matched;
+            const offset = base - candidate;
+            op += emitCopy(offset, matched, output[op..]);
+            if (ip >= ip_limit) break :main_loop;
+
+            const dword_prev = std.mem.readInt(u32, input[ip - 1 ..][0..4], .little);
+            tableEntryL1(sub_table, dword_prev, mask).* = @truncate(ip - 1);
+
+            const dword_curr = std.mem.readInt(u32, input[ip..][0..4], .little);
+            const curr_entry = tableEntryL1(sub_table, dword_curr, mask);
+            candidate = curr_entry.*;
+            curr_entry.* = @truncate(ip);
+
+            if (std.mem.readInt(u32, input[candidate..][0..4], .little) != dword_curr) {
+                break;
+            }
+        }
+        preload = std.mem.readInt(u32, input[ip + 1 ..][0..4], .little);
+    }
+
+    if (ip < input.len) {
+        op += emitLiteral(input[ip..], output[op..]);
+    }
+    return op;
+}
+
+/// Google Snappy Level 2 double-hash match finder.
+fn compressFragmentL2(
+    input: []const u8,
+    output: []u8,
+    table: []u16,
+) usize {
+    const table_size = calculateTableSize(input.len);
+    const half_size = table_size >> 1;
+    const t4 = table[0..half_size];
+    const t8 = table[half_size..table_size];
+    @memset(table[0..table_size], 0);
+    const mask = half_size - 1;
+
+    if (input.len < 15) {
+        return emitLiteral(input, output);
+    }
+
+    const ip_limit = input.len - 15;
+    var ip: usize = 0;
+    var next_emit: usize = 0;
+    var op: usize = 0;
+
+    main_loop: while (true) {
+        next_emit = ip;
+        ip += 1;
+        var data: u64 = std.mem.readInt(u64, input[ip..][0..8], .little);
+        var skip: usize = 512;
+
+        var candidate: usize = undefined;
+        var candidate_len: usize = undefined;
+
+        while (true) {
+            const entry8 = tableEntry8Byte(t8, data, mask);
+            const bytes_between = skip >> 9;
+            skip += 1;
+            const next_ip = ip + bytes_between;
+            if (next_ip > ip_limit) {
+                ip = next_emit;
+                break :main_loop;
+            }
+            candidate = entry8.*;
+            entry8.* = @truncate(ip);
+
+            if (@as(u32, @truncate(data)) == std.mem.readInt(u32, input[candidate..][0..4], .little)) {
+                candidate_len = 4 + findMatchLengthPlain(input[candidate + 4 ..], input[ip + 4 ..]);
+                break;
+            }
+
+            const entry4 = tableEntry4Byte(t4, @truncate(data), mask);
+            candidate = entry4.*;
+            entry4.* = @truncate(ip);
+
+            if (@as(u32, @truncate(data)) == std.mem.readInt(u32, input[candidate..][0..4], .little)) {
+                candidate_len = 4 + findMatchLengthPlain(input[candidate + 4 ..], input[ip + 4 ..]);
+                const next_data = std.mem.readInt(u64, input[ip + 1 ..][0..8], .little);
+                const entry8_next = tableEntry8Byte(t8, next_data, mask);
+                const candidate2 = entry8_next.*;
+                const candidate_len2 = findMatchLengthPlain(input[candidate2..], input[ip + 1 ..]);
+                if (candidate_len2 > candidate_len) {
+                    entry8_next.* = @truncate(ip + 1);
+                    candidate = candidate2;
+                    candidate_len = candidate_len2;
+                    ip += 1;
+                }
+                break;
+            }
+
+            data = std.mem.readInt(u64, input[next_ip..][0..8], .little);
+            ip = next_ip;
+        }
+
+        // Backtrack to the point it matches fully
+        while (ip > next_emit and candidate > 0 and input[ip - 1] == input[candidate - 1]) {
+            ip -= 1;
+            candidate -= 1;
+            candidate_len += 1;
+        }
+
+        if (ip + 8 <= input.len) {
+            tableEntry8Byte(t8, std.mem.readInt(u64, input[ip + 1 ..][0..8], .little), mask).* = @truncate(ip + 1);
+            if (ip + 9 <= input.len) {
+                tableEntry8Byte(t8, std.mem.readInt(u64, input[ip + 2 ..][0..8], .little), mask).* = @truncate(ip + 2);
+            }
+        }
+        tableEntry4Byte(t4, std.mem.readInt(u32, input[ip + 1 ..][0..4], .little), mask).* = @truncate(ip + 1);
+
+        if (ip > next_emit) {
+            op += emitLiteral(input[next_emit..ip], output[op..]);
+        }
+
+        while (true) {
+            const base = ip;
+            ip += candidate_len;
+            const offset = base - candidate;
+            op += emitCopy(offset, candidate_len, output[op..]);
+            if (ip >= ip_limit) break :main_loop;
+
+            if (ip > 7) {
+                tableEntry8Byte(t8, std.mem.readInt(u64, input[ip - 7 ..][0..8], .little), mask).* = @truncate(ip - 7);
+                tableEntry8Byte(t8, std.mem.readInt(u64, input[ip - 4 ..][0..8], .little), mask).* = @truncate(ip - 4);
+            }
+            if (ip > 3) {
+                tableEntry8Byte(t8, std.mem.readInt(u64, input[ip - 3 ..][0..8], .little), mask).* = @truncate(ip - 3);
+            }
+            if (ip > 2) {
+                tableEntry8Byte(t8, std.mem.readInt(u64, input[ip - 2 ..][0..8], .little), mask).* = @truncate(ip - 2);
+                tableEntry4Byte(t4, std.mem.readInt(u32, input[ip - 2 ..][0..4], .little), mask).* = @truncate(ip - 2);
+            }
+            tableEntry4Byte(t4, std.mem.readInt(u32, input[ip - 1 ..][0..4], .little), mask).* = @truncate(ip - 1);
+
+            const curr_data = std.mem.readInt(u64, input[ip..][0..8], .little);
+            const entry8 = tableEntry8Byte(t8, curr_data, mask);
+            candidate = entry8.*;
+            entry8.* = @truncate(ip);
+
+            if (std.mem.readInt(u32, input[ip..][0..4], .little) == std.mem.readInt(u32, input[candidate..][0..4], .little)) {
+                candidate_len = 4 + findMatchLengthPlain(input[candidate + 4 ..], input[ip + 4 ..]);
+                continue;
+            }
+
+            const entry4 = tableEntry4Byte(t4, @truncate(curr_data), mask);
+            candidate = entry4.*;
+            entry4.* = @truncate(ip);
+
+            if (std.mem.readInt(u32, input[ip..][0..4], .little) == std.mem.readInt(u32, input[candidate..][0..4], .little)) {
+                candidate_len = 4 + findMatchLengthPlain(input[candidate + 4 ..], input[ip + 4 ..]);
+                continue;
+            }
+
+            break;
+        }
+    }
+
+    if (ip < input.len) {
+        op += emitLiteral(input[ip..], output[op..]);
+    }
+    return op;
+}
+
+/// Compresses a Snappy block into a caller-provided destination buffer with custom table.
+pub fn compressIntoWithTable(
+    input: []const u8,
+    output: []u8,
+    table: []u16,
     options: types.CompressionOptions,
 ) types.Error!usize {
     if (input.len > std.math.maxInt(u32)) return error.InputTooLarge;
@@ -134,20 +526,15 @@ pub fn compressInto(
         return op;
     }
 
-    var table: [HASH_TABLE_SIZE]u16 = undefined;
-    var table2: [HASH_TABLE_SIZE]u16 = undefined;
-
     var in_offset: usize = 0;
     while (in_offset < input.len) {
         const fragment_len = @min(input.len - in_offset, types.MAX_BLOCK_SIZE);
         const fragment = input[in_offset .. in_offset + fragment_len];
 
-        const written = try compressFragment(
-            fragment,
-            output[op..],
-            &table,
-            if (options.level >= 2) &table2 else null,
-        );
+        const written = if (options.level >= 2)
+            compressFragmentL2(fragment, output[op..], table)
+        else
+            compressFragmentL1(fragment, output[op..], table);
         op += written;
         in_offset += fragment_len;
     }
@@ -155,167 +542,14 @@ pub fn compressInto(
     return op;
 }
 
-/// Emits literal bytes to the output buffer according to the Snappy specification.
-fn emitLiteral(literal: []const u8, out: []u8) usize {
-    const len = literal.len;
-    if (len == 0) return 0;
-    var op: usize = 0;
-
-    if (len <= 60) {
-        out[op] = types.TAG_LITERAL | (@as(u8, @truncate(len - 1)) << 2);
-        op += 1;
-    } else if (len <= 256) {
-        out[op] = types.TAG_LITERAL | (60 << 2);
-        out[op + 1] = @as(u8, @truncate(len - 1));
-        op += 2;
-    } else if (len <= 65536) {
-        out[op] = types.TAG_LITERAL | (61 << 2);
-        std.mem.writeInt(u16, out[op + 1 ..][0..2], @as(u16, @truncate(len - 1)), .little);
-        op += 3;
-    } else if (len <= (1 << 24)) {
-        out[op] = types.TAG_LITERAL | (62 << 2);
-        out[op + 1] = @as(u8, @truncate(len - 1));
-        out[op + 2] = @as(u8, @truncate((len - 1) >> 8));
-        out[op + 3] = @as(u8, @truncate((len - 1) >> 16));
-        op += 4;
-    } else {
-        out[op] = types.TAG_LITERAL | (63 << 2);
-        std.mem.writeInt(u32, out[op + 1 ..][0..4], @as(u32, @truncate(len - 1)), .little);
-        op += 5;
-    }
-
-    @memcpy(out[op .. op + len], literal);
-    return op + len;
-}
-
-/// Emits a copy instruction (backreference) with optimal tag selection.
-fn emitCopy(offset: usize, length: usize, out: []u8) usize {
-    var op: usize = 0;
-    var rem_len = length;
-
-    while (rem_len >= 68) {
-        out[op] = types.TAG_COPY_2 | (63 << 2);
-        std.mem.writeInt(u16, out[op + 1 ..][0..2], @as(u16, @truncate(offset)), .little);
-        op += 3;
-        rem_len -= 64;
-    }
-
-    if (rem_len > 64) {
-        out[op] = types.TAG_COPY_2 | (59 << 2);
-        std.mem.writeInt(u16, out[op + 1 ..][0..2], @as(u16, @truncate(offset)), .little);
-        op += 3;
-        rem_len -= 60;
-    }
-
-    if (rem_len < 12 and offset < 2048 and rem_len >= 4) {
-        const len_field = @as(u8, @truncate(rem_len - 4));
-        const off_hi = @as(u8, @truncate((offset >> 8) & 0x07));
-        out[op] = types.TAG_COPY_1 | (len_field << 2) | (off_hi << 5);
-        out[op + 1] = @as(u8, @truncate(offset & 0xff));
-        op += 2;
-    } else if (offset <= 65535) {
-        out[op] = types.TAG_COPY_2 | (@as(u8, @truncate(rem_len - 1)) << 2);
-        std.mem.writeInt(u16, out[op + 1 ..][0..2], @as(u16, @truncate(offset)), .little);
-        op += 3;
-    } else {
-        out[op] = types.TAG_COPY_4 | (@as(u8, @truncate(rem_len - 1)) << 2);
-        std.mem.writeInt(u32, out[op + 1 ..][0..4], @as(u32, @truncate(offset)), .little);
-        op += 5;
-    }
-
-    return op;
-}
-
-/// Compresses a single fragment (at most 65536 bytes) using Snappy's fast LZ77 match finder.
-fn compressFragment(
+/// Compresses a Snappy block into a caller-provided destination buffer.
+pub fn compressInto(
     input: []const u8,
     output: []u8,
-    table: *[HASH_TABLE_SIZE]u16,
-    table2: ?*[HASH_TABLE_SIZE]u16,
+    options: types.CompressionOptions,
 ) types.Error!usize {
-    @memset(table, 0);
-    if (table2) |t2| @memset(t2, 0);
-
-    if (input.len < 4) {
-        return emitLiteral(input, output);
-    }
-
-    const shift = 32 - HASH_TABLE_BITS;
-    var ip: usize = 0;
-    var next_emit: usize = 0;
-    var op: usize = 0;
-    var skip: usize = 32;
-
-    const ip_limit = if (input.len >= 15) input.len - 15 else 0;
-
-    while (ip <= ip_limit) {
-        const dword = std.mem.readInt(u32, input[ip..][0..4], .little);
-        const hash = (dword *% HASH_MULTIPLIER) >> shift;
-        const candidate = @as(usize, table[hash]);
-        table[hash] = @as(u16, @truncate(ip));
-
-        var match_len: usize = 0;
-        var match_cand = candidate;
-
-        if (candidate < ip and ip - candidate < types.MAX_BLOCK_SIZE) {
-            if (std.mem.readInt(u32, input[candidate..][0..4], .little) == dword) {
-                match_len = 4;
-                while (ip + match_len < input.len and candidate + match_len < ip and
-                    input[ip + match_len] == input[candidate + match_len])
-                {
-                    match_len += 1;
-                }
-            }
-        }
-
-        if (table2) |t2| {
-            const hash2 = (dword *% SECONDARY_MULTIPLIER) >> shift;
-            const cand2 = @as(usize, t2[hash2]);
-            t2[hash2] = @as(u16, @truncate(ip));
-
-            if (cand2 < ip and ip - cand2 < types.MAX_BLOCK_SIZE) {
-                if (std.mem.readInt(u32, input[cand2..][0..4], .little) == dword) {
-                    var len2: usize = 4;
-                    while (ip + len2 < input.len and cand2 + len2 < ip and
-                        input[ip + len2] == input[cand2 + len2])
-                    {
-                        len2 += 1;
-                    }
-                    if (len2 > match_len) {
-                        match_len = len2;
-                        match_cand = cand2;
-                    }
-                }
-            }
-        }
-
-        if (match_len >= 4) {
-            // Emit any pending literal bytes prior to this match.
-            if (ip > next_emit) {
-                op += emitLiteral(input[next_emit..ip], output[op..]);
-            }
-
-            // Emit the match copy instruction.
-            const offset = ip - match_cand;
-            op += emitCopy(offset, match_len, output[op..]);
-
-            ip += match_len;
-            next_emit = ip;
-            skip = 32;
-        } else {
-            // Snappy dynamic skipping heuristic for non-compressible data.
-            const step = skip >> 5;
-            skip += step;
-            ip += step;
-        }
-    }
-
-    // Emit any remaining bytes as literal.
-    if (next_emit < input.len) {
-        op += emitLiteral(input[next_emit..], output[op..]);
-    }
-
-    return op;
+    var table: [MAX_HASH_TABLE_SIZE]u16 = undefined;
+    return compressIntoWithTable(input, output, &table, options);
 }
 
 /// Decompresses a Snappy block into a caller-provided destination buffer.
@@ -399,7 +633,9 @@ pub fn decompressInto(
                 const offset = std.mem.readInt(u32, input[in_pos..][0..4], .little);
                 in_pos += 4;
 
-                if (offset == 0 or offset > out_pos) return error.CorruptStream;
+                if (offset == 0 or offset > out_produced_pos: {
+                    break :out_produced_pos out_pos;
+                }) return error.CorruptStream;
                 if (copy_len > expected_len - out_pos) return error.CorruptStream;
 
                 copyMatch(output, out_pos, offset, copy_len);
@@ -452,7 +688,10 @@ pub fn decompress(
     errdefer allocator.free(out);
 
     const produced = try decompressInto(input, out, options);
-    if (produced != expected_len) return error.CorruptStream;
+    if (produced != expected_len) {
+        allocator.free(out);
+        return error.CorruptStream;
+    }
     return out;
 }
 
@@ -541,7 +780,7 @@ test "block large buffer exceeding 64KB fragment" {
     try testing.expectEqualSlices(u8, big_buf, decomp);
 }
 
-test "block level 2 compression" {
+test "block level 1 and level 2 compression" {
     const testing = std.testing;
     const alloc = testing.allocator;
 
@@ -558,9 +797,14 @@ test "block level 2 compression" {
     const comp2 = try compress(alloc, text, .{ .level = 2 });
     defer alloc.free(comp2);
 
+    try testing.expect(comp2.len <= comp1.len);
+
+    const decomp1 = try decompress(alloc, comp1, .{});
+    defer alloc.free(decomp1);
+    try testing.expectEqualStrings(text, decomp1);
+
     const decomp2 = try decompress(alloc, comp2, .{});
     defer alloc.free(decomp2);
-
     try testing.expectEqualStrings(text, decomp2);
 }
 
@@ -587,4 +831,72 @@ test "block literal length u32 overflow rejection" {
     var out_buf: [65536]u8 = undefined;
     try testing.expectError(error.CorruptStream, decompressInto(&comp_data, &out_buf, .{}));
     try testing.expect(!isValidCompressedBuffer(&comp_data));
+}
+
+test "official testdata alice29.txt level 1 and level 2 compression" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const data = @embedFile("testdata/alice29.txt");
+    const comp1 = try compress(alloc, data, .{ .level = 1 });
+    defer alloc.free(comp1);
+
+    // Google C++ Snappy compresses alice29.txt to exactly 86727 bytes
+    try testing.expectEqual(@as(usize, 86727), comp1.len);
+
+    const decomp1 = try decompress(alloc, comp1, .{});
+    defer alloc.free(decomp1);
+    try testing.expectEqualSlices(u8, data, decomp1);
+
+    const comp2 = try compress(alloc, data, .{ .level = 2 });
+    defer alloc.free(comp2);
+
+    try testing.expect(comp2.len <= comp1.len);
+
+    const decomp2 = try decompress(alloc, comp2, .{});
+    defer alloc.free(decomp2);
+    try testing.expectEqualSlices(u8, data, decomp2);
+}
+
+test "official testdata html level 1 and level 2 compression" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const data = @embedFile("testdata/html");
+    const comp1 = try compress(alloc, data, .{ .level = 1 });
+    defer alloc.free(comp1);
+
+    // Google C++ Snappy compresses html to exactly 22758 bytes
+    try testing.expectEqual(@as(usize, 22758), comp1.len);
+
+    const decomp1 = try decompress(alloc, comp1, .{});
+    defer alloc.free(decomp1);
+    try testing.expectEqualSlices(u8, data, decomp1);
+
+    const comp2 = try compress(alloc, data, .{ .level = 2 });
+    defer alloc.free(comp2);
+
+    try testing.expect(comp2.len <= comp1.len);
+
+    const decomp2 = try decompress(alloc, comp2, .{});
+    defer alloc.free(decomp2);
+    try testing.expectEqualSlices(u8, data, decomp2);
+}
+
+test "official testdata baddata rejection" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const bad1 = @embedFile("testdata/baddata1.snappy");
+    const bad2 = @embedFile("testdata/baddata2.snappy");
+    const bad3 = @embedFile("testdata/baddata3.snappy");
+
+    try testing.expect(!isValidCompressedBuffer(bad1));
+    try testing.expectError(error.CorruptStream, decompress(alloc, bad1, .{}));
+
+    try testing.expect(!isValidCompressedBuffer(bad2));
+    try testing.expectError(error.CorruptStream, decompress(alloc, bad2, .{}));
+
+    try testing.expect(!isValidCompressedBuffer(bad3));
+    try testing.expectError(error.CorruptStream, decompress(alloc, bad3, .{}));
 }

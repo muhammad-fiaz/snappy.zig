@@ -16,11 +16,13 @@ yarn-debug.log*
 yarn-error.log*
 bun-debug.log*
 
-# Temporary test, benchmark, and example runtime files
+# Temporary test, benchmark, reference, and example runtime files
 *.sz
 temp_*
 test_io_*
 *.tmp
+snappy/
+snappy_ref/
 
 # Operating system artifacts
 .DS_Store

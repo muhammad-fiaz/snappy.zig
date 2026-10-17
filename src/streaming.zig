@@ -66,7 +66,6 @@ pub fn decompressStream(
     writer: *std.Io.Writer,
     options: types.DecompressionOptions,
 ) types.StreamError!void {
-    _ = allocator;
     var stream_header: [framing.STREAM_HEADER.len]u8 = undefined;
     reader.readSliceAll(&stream_header) catch return error.TruncatedInput;
     if (!std.mem.eql(u8, &stream_header, &framing.STREAM_HEADER)) {
@@ -96,12 +95,12 @@ pub fn decompressStream(
 
         var payload_slice: []u8 = undefined;
         var dynamic_alloc: ?[]u8 = null;
-        defer if (dynamic_alloc) |da| std.heap.page_allocator.free(da);
+        defer if (dynamic_alloc) |da| allocator.free(da);
 
         if (chunk_len <= payload_buf.len) {
             payload_slice = payload_buf[0..chunk_len];
         } else {
-            dynamic_alloc = std.heap.page_allocator.alloc(u8, chunk_len) catch return error.OutOfMemory;
+            dynamic_alloc = allocator.alloc(u8, chunk_len) catch return error.OutOfMemory;
             payload_slice = dynamic_alloc.?;
         }
 

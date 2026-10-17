@@ -8,21 +8,27 @@ pub const Compressor = struct {
     allocator: std.mem.Allocator,
     options: types.CompressionOptions,
     scratch: []u8,
+    table: []u16,
 
     /// Initializes a reusable compressor.
     pub fn init(allocator: std.mem.Allocator, options: types.CompressionOptions) types.Error!Compressor {
         const scratch_size = block.maxCompressedSize(types.MAX_BLOCK_SIZE) + types.MAX_BLOCK_SIZE;
         const scratch = allocator.alloc(u8, scratch_size) catch return error.OutOfMemory;
+        errdefer allocator.free(scratch);
+
+        const table = allocator.alloc(u16, block.MAX_HASH_TABLE_SIZE) catch return error.OutOfMemory;
         return Compressor{
             .allocator = allocator,
             .options = options,
             .scratch = scratch,
+            .table = table,
         };
     }
 
     /// Releases resources allocated by the compressor.
     pub fn deinit(self: *Compressor) void {
         self.allocator.free(self.scratch);
+        self.allocator.free(self.table);
         self.* = undefined;
     }
 
@@ -35,7 +41,22 @@ pub const Compressor = struct {
     pub fn compress(self: *Compressor, input: []const u8) types.Error![]u8 {
         return switch (self.options.blockMode) {
             .framed => framing.compress(self.allocator, input, self.options),
-            .block => block.compress(self.allocator, input, self.options),
+            .block => {
+                const max_len = block.maxCompressedSize(input.len);
+                const buf = try self.allocator.alloc(u8, max_len);
+                errdefer self.allocator.free(buf);
+
+                const actual_len = try block.compressIntoWithTable(input, buf, self.table, self.options);
+                if (actual_len == buf.len) return buf;
+
+                const trimmed = self.allocator.realloc(buf, actual_len) catch {
+                    const copy = try self.allocator.alloc(u8, actual_len);
+                    @memcpy(copy, buf[0..actual_len]);
+                    self.allocator.free(buf);
+                    return copy;
+                };
+                return trimmed;
+            },
         };
     }
 
@@ -43,7 +64,7 @@ pub const Compressor = struct {
     pub fn compressInto(self: *Compressor, input: []const u8, output: []u8) types.Error!usize {
         return switch (self.options.blockMode) {
             .framed => framing.compressInto(input, output, self.options),
-            .block => block.compressInto(input, output, self.options),
+            .block => block.compressIntoWithTable(input, output, self.table, self.options),
         };
     }
 };
