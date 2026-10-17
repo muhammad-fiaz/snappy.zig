@@ -25,7 +25,7 @@ pub fn maxCompressedSize(source_bytes: usize) usize {
 pub fn calculateTableSize(input_size: usize) usize {
     if (input_size > MAX_HASH_TABLE_SIZE) return MAX_HASH_TABLE_SIZE;
     if (input_size < MIN_HASH_TABLE_SIZE) return MIN_HASH_TABLE_SIZE;
-    return @as(usize, 2) << @intCast(std.math.log2(input_size - 1));
+    return std.math.ceilPowerOfTwo(usize, input_size) catch MAX_HASH_TABLE_SIZE;
 }
 
 /// Inspects the uncompressed length of a Snappy block without decompressing it.

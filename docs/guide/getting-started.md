@@ -27,9 +27,7 @@ const std = @import("std");
 const snappy = @import("snappy");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.page_allocator;
 
     const payload = "Hello, high-speed Snappy compression from native Zig!";
 
@@ -56,9 +54,7 @@ const std = @import("std");
 const snappy = @import("snappy");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.page_allocator;
 
     const data = "Database column values or key-value record payload.";
 

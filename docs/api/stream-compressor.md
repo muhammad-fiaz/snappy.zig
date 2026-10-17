@@ -12,7 +12,7 @@ keywords: StreamingCompressor, push streaming zig, std.io.writer compression, ch
 pub const StreamingCompressor = struct {
     allocator: std.mem.Allocator,
     options: CompressionOptions,
-    buffer: std.ArrayListUnmanaged(u8),
+    buffer: std.ArrayList(u8),
     header_written: bool,
     // ...
 };

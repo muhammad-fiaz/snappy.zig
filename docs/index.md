@@ -77,9 +77,7 @@ const std = @import("std");
 const snappy = @import("snappy");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.page_allocator;
 
     const raw_data = "Snappy is a compression/decompression library aimed at very high speeds!";
 

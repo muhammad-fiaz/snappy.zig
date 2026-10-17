@@ -12,8 +12,8 @@ keywords: StreamingDecompressor, pull decompression zig, feed take streaming, ch
 pub const StreamingDecompressor = struct {
     allocator: std.mem.Allocator,
     options: DecompressionOptions,
-    in_buffer: std.ArrayListUnmanaged(u8),
-    out_buffer: std.ArrayListUnmanaged(u8),
+    in_buffer: std.ArrayList(u8),
+    out_buffer: std.ArrayList(u8),
     header_verified: bool,
     // ...
 };

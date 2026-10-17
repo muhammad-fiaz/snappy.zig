@@ -176,7 +176,7 @@ pub fn decompressStream(
 pub const StreamingCompressor = struct {
     allocator: std.mem.Allocator,
     options: types.CompressionOptions,
-    buffer: std.ArrayListUnmanaged(u8),
+    buffer: std.ArrayList(u8),
     header_written: bool,
 
     pub fn init(allocator: std.mem.Allocator, options: types.CompressionOptions) types.Error!StreamingCompressor {
@@ -284,8 +284,8 @@ pub const StreamingCompressor = struct {
 pub const StreamingDecompressor = struct {
     allocator: std.mem.Allocator,
     options: types.DecompressionOptions,
-    in_buffer: std.ArrayListUnmanaged(u8),
-    out_buffer: std.ArrayListUnmanaged(u8),
+    in_buffer: std.ArrayList(u8),
+    out_buffer: std.ArrayList(u8),
     header_verified: bool,
 
     pub fn init(allocator: std.mem.Allocator, options: types.DecompressionOptions) StreamingDecompressor {

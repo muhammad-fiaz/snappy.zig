@@ -242,7 +242,7 @@ pub fn decompress(
     options: types.DecompressionOptions,
 ) types.Error![]u8 {
     // Dynamic ArrayList for assembling uncompressed chunks.
-    var list: std.ArrayListUnmanaged(u8) = .empty;
+    var list: std.ArrayList(u8) = .empty;
     errdefer list.deinit(allocator);
 
     if (input.len < STREAM_HEADER.len) return error.TruncatedInput;
@@ -424,7 +424,7 @@ test "framed stream skippable and unskippable chunks" {
     const alloc = testing.allocator;
 
     // Build a stream with a skippable chunk (0x80)
-    var stream: std.ArrayListUnmanaged(u8) = .empty;
+    var stream: std.ArrayList(u8) = .empty;
     defer stream.deinit(alloc);
 
     try stream.appendSlice(alloc, &STREAM_HEADER);
