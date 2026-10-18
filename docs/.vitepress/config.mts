@@ -1,6 +1,6 @@
 import { defineConfig } from "vitepress";
 
-export const SITE_URL = "https://muhammad-fiaz.github.io/snappy.zig";
+export const SITE_URL = "https://muhammad-fiaz.github.io/snappy.zig/";
 export const SITE_NAME = "snappy.zig";
 export const SITE_DESCRIPTION =
   "A complete native Zig implementation of Google's Snappy compression format. Fast, memory-safe, zero external dependencies. Supports framed streams, raw blocks, streaming I/O, and context reuse.";
